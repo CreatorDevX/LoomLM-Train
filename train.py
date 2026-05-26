@@ -7,12 +7,6 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-try:
-    import torch._inductor
-    torch._inductor.config.triton.cudagraphs = False
-except (ImportError, AttributeError):
-    pass
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from difdecLM import DifDecConfig
 from difdecLM.model.difdec_lm import DifDecLM
@@ -200,12 +194,8 @@ print(f"  Trainable: {trainable:,}  Total: {total:,}")
 
 # ── Compile ──────────────────────────────────────────────────────────────────
 if c.compile and hasattr(torch, "compile") and device.type == "cuda":
-    print(f"  Compiling decoder head ({args.compile_mode})...")
-    model.decoder = torch.compile(model.decoder, mode=args.compile_mode)
-    model.time_embedding = torch.compile(model.time_embedding, mode=args.compile_mode)
-    model.projection_head = torch.compile(model.projection_head, mode=args.compile_mode)
-    if hasattr(model, "embed_proj"):
-        model.embed_proj = torch.compile(model.embed_proj, mode=args.compile_mode)
+    print(f"  Compiling decoder ({args.compile_mode})...")
+    model.decoder = torch.compile(model.decoder, mode=args.compile_mode, options={"cudagraphs": False})
 
 # ── Diffusion components ─────────────────────────────────────────────────────
 diff_process = DiffusionProcess(c).to(device)
