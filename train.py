@@ -344,8 +344,8 @@ def evaluate(step):
     timesteps = diff_process.get_timesteps(eval_input_ids.size(0), N_BLOCKS, device)
     with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
         outputs = model(eval_input_ids, timesteps, attention_mask=eval_attn_mask)
-        loss_fn.set_step(step)
-        _, metrics = loss_fn(outputs, eval_block_tokens, block_mask=eval_block_mask)
+    loss_fn.set_step(step)
+    _, metrics = loss_fn(outputs, eval_block_tokens, block_mask=eval_block_mask)
     model.train()
     return metrics
 
@@ -421,9 +421,9 @@ while step < c.training.max_steps:
 
         with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
             outputs = model(input_ids, timesteps, attention_mask=attention_mask)
-            loss_fn.set_step(step)
-            loss, metrics = loss_fn(outputs, block_tokens, block_mask=block_mask)
-            loss = loss / c.training.gradient_accumulation_steps
+        loss_fn.set_step(step)
+        loss, metrics = loss_fn(outputs, block_tokens, block_mask=block_mask)
+        loss = loss / c.training.gradient_accumulation_steps
 
         loss.backward()
 
