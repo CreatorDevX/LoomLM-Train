@@ -179,6 +179,12 @@ print("Building model...")
 model = DifDecLM(c)
 model.to(device=device, dtype=amp_dtype if device.type == "cuda" else torch.float32)
 
+# Keep normalization layers in float32 for numerical stability under AMP
+for m in model.decoder.modules():
+    if isinstance(m, nn.LayerNorm):
+        m.to(dtype=torch.float32)
+model.time_embedding.to(dtype=torch.float32)
+
 if c.backbone.freeze:
     for p in model.backbone.parameters():
         p.requires_grad_(False)
@@ -264,46 +270,20 @@ train_loader = DataLoader(
     pin_memory=True,
 )
 
-# ── Validation set ───────────────────────────────────────────────────────────
-EVAL_TEXTS = [
-    "The transformer architecture uses self-attention to process sequences in parallel, enabling efficient training on large text corpora.",
-    "Diffusion models gradually add noise to data and learn to reverse this process, generating high-quality samples from pure noise.",
-    "Language models predict the next token given a sequence of previous tokens, forming the foundation of modern natural language processing.",
-    "Gradient descent optimizes neural network parameters by computing gradients of the loss function with respect to each weight.",
-    "Transfer learning pretrains a model on a large dataset before fine-tuning on a specific downstream task, improving sample efficiency.",
-]
-
-
-def build_eval_batch(texts, config, tokenizer):
-    items = []
-    for text in texts:
-        tokens = tokenizer.encode(text, truncation=True, max_length=SEQ_LEN)
-        total_len = ((len(tokens) - 1) // BLOCK_SIZE) * BLOCK_SIZE
-        if total_len < BLOCK_SIZE:
-            total_len = BLOCK_SIZE
-        tokens = tokens[:total_len + 1]
-        input_ids = tokens[:-1]
-        block_tokens = tokens[1:]
-        n_blocks = len(block_tokens) // BLOCK_SIZE
-        input_ids = torch.tensor(input_ids[:n_blocks * BLOCK_SIZE], dtype=torch.long)
-        block_tokens = torch.tensor(block_tokens[:n_blocks * BLOCK_SIZE], dtype=torch.long).view(-1, BLOCK_SIZE)
-        attention_mask = torch.ones(n_blocks * BLOCK_SIZE, dtype=torch.long)
-        target_blocks = N_BLOCKS
-        if n_blocks < target_blocks:
-            pad_seq = (target_blocks - n_blocks) * BLOCK_SIZE
-            input_ids = torch.cat([input_ids, torch.full((pad_seq,), config.training.pad_token_id, dtype=torch.long)])
-            attention_mask = torch.cat([attention_mask, torch.zeros(pad_seq, dtype=torch.long)])
-            block_tokens = torch.cat([block_tokens, torch.full((target_blocks - n_blocks, BLOCK_SIZE), config.training.pad_token_id, dtype=torch.long)])
-        items.append({"input_ids": input_ids, "attention_mask": attention_mask, "block_tokens": block_tokens})
-    return collate_blocks(items)
-
-
-eval_tokenizer = train_dataset.base.tokenizer
-eval_batch = build_eval_batch(EVAL_TEXTS, c, eval_tokenizer)
-eval_input_ids = eval_batch["input_ids"].to(device)
-eval_attn_mask = eval_batch["attention_mask"].to(device)
-eval_block_tokens = eval_batch["block_tokens"].to(device)
-eval_block_mask = eval_batch["block_mask"].to(device)
+# ── Validation set (from Fineweb-edu) ────────────────────────────────────────
+print("Building validation batch from Fineweb-edu...")
+val_items = []
+val_iter = iter(train_dataset)
+for _ in range(c.training.batch_size):
+    try:
+        val_items.append(next(val_iter))
+    except StopIteration:
+        break
+val_batch = collate_blocks(val_items)
+eval_input_ids = val_batch["input_ids"].to(device)
+eval_attn_mask = val_batch["attention_mask"].to(device)
+eval_block_tokens = val_batch["block_tokens"].to(device)
+eval_block_mask = val_batch["block_mask"].to(device)
 
 # ── Inference generator ──────────────────────────────────────────────────────
 from difdecLM.inference import BlockGenerator

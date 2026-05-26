@@ -17,6 +17,8 @@ class DiffusionDecoderLayer(nn.Module):
         )
 
         self.time_mlp = nn.Linear(d_time, d_decoder)
+        nn.init.zeros_(self.time_mlp.weight)
+        nn.init.zeros_(self.time_mlp.bias)
 
         if use_cross_attn:
             ctx_dim = d_context if d_context is not None else d_decoder
@@ -37,7 +39,7 @@ class DiffusionDecoderLayer(nn.Module):
 
     def forward(self, x, context_slots, time_emb, attn_mask=None):
         x = x + self._sa_block(self.norm1(x), attn_mask)
-        time_gate = self.time_mlp(time_emb).unsqueeze(1)
+        time_gate = torch.tanh(self.time_mlp(time_emb)).unsqueeze(1)
         x = x * (1 + time_gate)
         if self.use_cross_attn:
             x = x + self.dropout(self.cross_attn(self.norm_cross(x), context_slots))
