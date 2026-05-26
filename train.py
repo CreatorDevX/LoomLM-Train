@@ -133,20 +133,14 @@ c.compile = not args.no_compile
 
 # Phase presets
 if args.phase == 1:
-    c.training.max_steps = args.max_steps or 1500
+    c.training.max_steps = args.max_steps or 2000
     c.training.lr = args.lr or 1e-4
     c.training.diffusion_loss_weight = args.diff_weight or 1.0
-    c.training.clm_loss_weight = args.clm_weight or 0.0
-    c.training.consistency_loss_weight = args.consistency_weight or 0.0
-    c.backbone.freeze = True
-    USE_LORA = False
-elif args.phase == 2:
-    c.training.max_steps = args.max_steps or 500
-    c.training.lr = args.lr or 2e-5
-    c.training.diffusion_loss_weight = args.diff_weight or 1.0
-    c.training.clm_loss_weight = args.clm_weight or 0.3
+    clm_w = args.clm_weight or 0.3
+    c.training.clm_loss_weight = clm_w
+    c.training.clm_loss_max_weight = clm_w
     c.training.consistency_loss_weight = args.consistency_weight or 0.1
-    c.training.clm_loss_ramp_steps = args.clm_ramp_steps or 1000
+    c.training.clm_loss_ramp_steps = args.clm_ramp_steps or 500
     c.backbone.freeze = True
     USE_LORA = args.use_lora
 elif args.phase == 3:
