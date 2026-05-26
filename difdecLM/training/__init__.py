@@ -1,5 +1,5 @@
 from .diffusion_process import DiffusionProcess
-from .losses import DiffusionLoss, compute_diffusion_loss
+from .losses import DiffusionLoss
 from .trainer import Trainer
 
-__all__ = ["DiffusionProcess", "DiffusionLoss", "compute_diffusion_loss", "Trainer"]
+__all__ = ["DiffusionProcess", "DiffusionLoss", "Trainer"]
