@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM
@@ -10,6 +11,42 @@ def _str_to_dtype(s: str):
         "bfloat16": torch.bfloat16,
     }
     return mapping.get(s, torch.float32)
+
+
+class LoRALinear(nn.Module):
+    def __init__(self, original_linear, r=16, alpha=16):
+        super().__init__()
+        self.add_module("original", original_linear)
+        self.r = r
+        self.scaling = alpha / r
+        device = original_linear.weight.device
+        dtype = original_linear.weight.dtype
+        self.lora_A = nn.Parameter(torch.empty(original_linear.in_features, r, device=device, dtype=dtype))
+        self.lora_B = nn.Parameter(torch.zeros(r, original_linear.out_features, device=device, dtype=dtype))
+        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+        original_linear.requires_grad_(False)
+
+    def forward(self, x):
+        return self.original(x) + (x @ self.lora_A @ self.lora_B) * self.scaling
+
+
+class LoRAEmbedding(nn.Module):
+    def __init__(self, original_embedding, r=16, alpha=16):
+        super().__init__()
+        self.add_module("original", original_embedding)
+        self.r = r
+        self.scaling = alpha / r
+        d_model = original_embedding.embedding_dim
+        device = original_embedding.weight.device
+        dtype = original_embedding.weight.dtype
+        self.lora_A = nn.Parameter(torch.empty(d_model, r, device=device, dtype=dtype))
+        self.lora_B = nn.Parameter(torch.zeros(r, d_model, device=device, dtype=dtype))
+        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+        original_embedding.requires_grad_(False)
+
+    def forward(self, x):
+        h = self.original(x)
+        return h + (h @ self.lora_A @ self.lora_B) * self.scaling
 
 
 def _detect_model(model):
@@ -102,6 +139,18 @@ class SmolLM2Backbone(nn.Module):
 
         x = self.norm(x)
         return x
+
+    def apply_lora(self, r=16, alpha=16):
+        def _recurse(module):
+            for name, child in list(module.named_children()):
+                if isinstance(child, nn.Linear):
+                    lora = LoRALinear(child, r, alpha)
+                    module._modules[name] = lora
+                else:
+                    _recurse(child)
+        _recurse(self.backbone)
+        lora_emb = LoRAEmbedding(self.embed_fn, r, alpha)
+        self.embed_fn = lora_emb
 
     def get_trainable_params(self):
         return [p for p in self.parameters() if p.requires_grad]

@@ -1,7 +1,5 @@
 """
-train.py - DifDecLM training script (Colab-friendly).
-
-All arguments exposed via CLI. Phase 1 (stabilize) by default.
+train.py - LoomLM (DifDecLM) training script. All CLI args exposed.
 """
 
 import os, sys, time, math, json, warnings
@@ -15,9 +13,8 @@ from difdecLM.model.difdec_lm import DifDecLM
 from difdecLM.training import DiffusionProcess, DiffusionLoss
 from difdecLM.data import collate_blocks
 
-# ── CLI ──────────────────────────────────────────────────────────────────────
 import argparse
-parser = argparse.ArgumentParser(description="DifDecLM Training")
+parser = argparse.ArgumentParser(description="LoomLM Training")
 # Mode
 parser.add_argument("--phase", type=int, default=1, choices=[1, 2, 3])
 parser.add_argument("--resume", type=str, default=None, help="checkpoint path")
@@ -36,51 +33,54 @@ parser.add_argument("--d-time-embed", type=int, default=384)
 
 # Diffusion
 parser.add_argument("--diffusion-steps", type=int, default=1000)
-parser.add_argument("--sampling-steps", type=int, default=8)
+parser.add_argument("--sampling-steps", type=int, default=4)
 parser.add_argument("--noise-schedule", type=str, default="cosine")
 parser.add_argument("--prediction-type", type=str, default="epsilon")
 
 # Training
 parser.add_argument("--batch-size", type=int, default=16)
 parser.add_argument("--grad-accum", type=int, default=2)
-parser.add_argument("--max-steps", type=int, default=2000)
-parser.add_argument("--lr", type=float, default=1e-4)
+parser.add_argument("--max-steps", type=int, default=None)
+parser.add_argument("--lr", type=float, default=None)
 parser.add_argument("--lr-min", type=float, default=1e-6)
 parser.add_argument("--warmup-steps", type=int, default=100)
 parser.add_argument("--weight-decay", type=float, default=0.01)
 parser.add_argument("--max-grad-norm", type=float, default=1.0)
 
 # Loss weights
-parser.add_argument("--diff-weight", type=float, default=1.0)
-parser.add_argument("--clm-weight", type=float, default=0.0)
-parser.add_argument("--eos-weight", type=float, default=0.01)
+parser.add_argument("--diff-weight", type=float, default=None)
+parser.add_argument("--clm-weight", type=float, default=None)
+parser.add_argument("--eos-weight", type=float, default=None)
 parser.add_argument("--clm-ramp-steps", type=int, default=0)
+
+# LoRA (phase 2)
+parser.add_argument("--lora-r", type=int, default=16)
+parser.add_argument("--lora-alpha", type=int, default=16)
+parser.add_argument("--no-lora", dest="use_lora", action="store_false", default=True)
 
 # Dataset
 parser.add_argument("--dataset", type=str, default="HuggingFaceFW/fineweb-edu")
 parser.add_argument("--dataset-config", type=str, default="default")
-parser.add_argument("--max-samples", type=int, default=50000)
+parser.add_argument("--max-samples", type=int, default=100000)
 parser.add_argument("--streaming", action="store_true", default=True)
 parser.add_argument("--no-streaming", dest="streaming", action="store_false")
 parser.add_argument("--num-workers", type=int, default=0)
 
 # Logging & saving
 parser.add_argument("--log-interval", type=int, default=10)
+parser.add_argument("--inference-interval", type=int, default=125)
 parser.add_argument("--eval-interval", type=int, default=200)
 parser.add_argument("--save-interval", type=int, default=500)
 parser.add_argument("--output-dir", type=str, default="checkpoints")
 parser.add_argument("--no-wandb", action="store_true")
-parser.add_argument("--wandb-project", type=str, default="difdeclm")
+parser.add_argument("--wandb-project", type=str, default="loomlm")
 
 # Performance
 parser.add_argument("--no-compile", action="store_true")
 parser.add_argument("--compile-mode", type=str, default="reduce-overhead",
                     choices=["default", "reduce-overhead", "max-autotune"])
-parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float32", "bfloat16", "float16"])
-parser.add_argument("--no-amp", action="store_true", help="disable autocast")
-
-# Unfreeze
-parser.add_argument("--unfreeze-layers", type=int, default=0)
+parser.add_argument("--dtype", type=str, default="float16", choices=["float32", "bfloat16", "float16"])
+parser.add_argument("--no-amp", action="store_true")
 
 args = parser.parse_args()
 
@@ -90,8 +90,8 @@ config.seed = args.seed
 c = config
 
 c.backbone.model_name = args.backbone
-c.backbone.freeze = args.phase < 3
-c.backbone.unfreeze_last_n_layers = args.unfreeze_layers if args.phase == 3 else 0
+c.backbone.freeze = True
+c.backbone.unfreeze_last_n_layers = 0
 
 c.decoder.d_decoder = args.d_decoder
 c.decoder.n_layers = args.decoder_layers
@@ -111,16 +111,10 @@ c.diffusion.d_time_embed = args.d_time_embed
 
 c.training.batch_size = args.batch_size
 c.training.gradient_accumulation_steps = args.grad_accum
-c.training.max_steps = args.max_steps
 c.training.warmup_steps = args.warmup_steps
-c.training.lr = args.lr
 c.training.lr_min = args.lr_min
 c.training.weight_decay = args.weight_decay
 c.training.max_grad_norm = args.max_grad_norm
-c.training.diffusion_loss_weight = args.diff_weight
-c.training.clm_loss_weight = args.clm_weight
-c.training.eos_loss_weight = args.eos_weight
-c.training.clm_loss_ramp_steps = args.clm_ramp_steps
 c.training.log_interval = args.log_interval
 c.training.eval_interval = args.eval_interval
 c.training.save_interval = args.save_interval
@@ -137,28 +131,34 @@ c.device = "cuda"
 c.dtype = args.dtype
 c.compile = not args.no_compile
 
-# Phase overrides
+# Phase presets
 if args.phase == 1:
+    c.training.max_steps = args.max_steps or 1500
+    c.training.lr = args.lr or 1e-4
+    c.training.diffusion_loss_weight = args.diff_weight or 1.0
+    c.training.clm_loss_weight = args.clm_weight or 0.0
+    c.training.eos_loss_weight = args.eos_weight or 0.01
     c.backbone.freeze = True
-    c.training.diffusion_loss_weight = 1.0
-    c.training.clm_loss_weight = 0.0
-    c.training.eos_loss_weight = 0.01
-    c.training.lr = args.lr
+    USE_LORA = False
 elif args.phase == 2:
-    c.backbone.freeze = True
-    c.training.diffusion_loss_weight = 1.0
-    c.training.clm_loss_weight = 0.3
-    c.training.eos_loss_weight = 0.05
-    c.training.clm_loss_ramp_steps = args.clm_ramp_steps or 3000
-    c.training.lr = args.lr or 5e-5
-elif args.phase == 3:
-    c.backbone.freeze = False
-    c.backbone.unfreeze_last_n_layers = args.unfreeze_layers or 4
-    c.training.diffusion_loss_weight = 0.5
-    c.training.clm_loss_weight = 0.5
-    c.training.eos_loss_weight = 0.02
-    c.training.clm_loss_ramp_steps = args.clm_ramp_steps or 2000
+    c.training.max_steps = args.max_steps or 500
     c.training.lr = args.lr or 2e-5
+    c.training.diffusion_loss_weight = args.diff_weight or 1.0
+    c.training.clm_loss_weight = args.clm_weight or 0.3
+    c.training.eos_loss_weight = args.eos_weight or 0.05
+    c.training.clm_loss_ramp_steps = args.clm_ramp_steps or 3000
+    c.backbone.freeze = True
+    USE_LORA = args.use_lora
+elif args.phase == 3:
+    c.training.max_steps = args.max_steps or 3000
+    c.training.lr = args.lr or 2e-5
+    c.training.diffusion_loss_weight = args.diff_weight or 0.5
+    c.training.clm_loss_weight = args.clm_weight or 0.5
+    c.training.eos_loss_weight = args.eos_weight or 0.02
+    c.training.clm_loss_ramp_steps = args.clm_ramp_steps or 2000
+    c.backbone.freeze = False
+    c.backbone.unfreeze_last_n_layers = 4
+    USE_LORA = False
 
 SEQ_LEN = c.block.max_seq_len
 N_BLOCKS = c.block.max_blocks
@@ -177,11 +177,16 @@ print(f"  Device: {device}  AMP: {amp_dtype if use_amp else 'off'}")
 # ── Model ────────────────────────────────────────────────────────────────────
 print("Building model...")
 model = DifDecLM(c)
-model.to(device=device, dtype=torch.bfloat16 if device.type == "cuda" else torch.float32)
+model.to(device=device, dtype=amp_dtype if device.type == "cuda" else torch.float32)
 
 if c.backbone.freeze:
     for p in model.backbone.parameters():
         p.requires_grad_(False)
+
+# Apply LoRA
+if USE_LORA:
+    print(f"  Applying LoRA (r={args.lora_r}, alpha={args.lora_alpha}) to backbone + embeddings...")
+    model.backbone.apply_lora(r=args.lora_r, alpha=args.lora_alpha)
 
 trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
 total = sum(p.numel() for p in model.parameters())
@@ -228,7 +233,6 @@ from torch.utils.data import DataLoader, IterableDataset
 
 
 class FixedLengthDataset(IterableDataset):
-    """Enforces every sample to exactly SEQ_LEN tokens (for fixed-shape compile)."""
     def __init__(self, config):
         self.base = BlockDiffusionDataset(config)
         self.seq_len = config.block.max_seq_len
@@ -287,8 +291,7 @@ def build_eval_batch(texts, config, tokenizer):
         n_blocks = len(block_tokens) // BLOCK_SIZE
         input_ids = torch.tensor(input_ids[:n_blocks * BLOCK_SIZE], dtype=torch.long)
         block_tokens = torch.tensor(block_tokens[:n_blocks * BLOCK_SIZE], dtype=torch.long).view(-1, BLOCK_SIZE)
-        attention_mask = torch.ones_like(input_ids)
-        # Pad to fixed length
+        attention_mask = torch.ones(n_blocks * BLOCK_SIZE, dtype=torch.long)
         target_blocks = N_BLOCKS
         if n_blocks < target_blocks:
             pad_seq = (target_blocks - n_blocks) * BLOCK_SIZE
@@ -306,7 +309,15 @@ eval_attn_mask = eval_batch["attention_mask"].to(device)
 eval_block_tokens = eval_batch["block_tokens"].to(device)
 eval_block_mask = eval_batch["block_mask"].to(device)
 
+# ── Inference generator ──────────────────────────────────────────────────────
+from difdecLM.inference import BlockGenerator
+
+INFERENCE_PROMPT = "The future of artificial intelligence"
+INFERENCE_MAX_BLOCKS = 4
+inference_generator = BlockGenerator(model, c, device)
+
 # ── Wandb ────────────────────────────────────────────────────────────────────
+WANDB = False
 if not args.no_wandb:
     try:
         import wandb
@@ -315,28 +326,26 @@ if not args.no_wandb:
             config={
                 "phase": args.phase, "backbone": args.backbone,
                 "batch_size": args.batch_size, "grad_accum": args.grad_accum,
-                "max_steps": args.max_steps, "lr": args.lr,
+                "max_steps": c.training.max_steps, "lr": c.training.lr,
                 "seq_len": SEQ_LEN, "blocks": N_BLOCKS, "block_size": BLOCK_SIZE,
                 "decoder_layers": args.decoder_layers, "d_decoder": args.d_decoder,
                 "trainable": trainable, "total": total,
                 "compile": not args.no_compile, "dtype": args.dtype,
                 "dataset": args.dataset, "max_samples": args.max_samples,
+                "sampling_steps": args.sampling_steps,
+                "use_lora": USE_LORA, "lora_r": args.lora_r,
             },
         )
         WANDB = True
     except Exception as e:
         print(f"  wandb init failed: {e}")
-        WANDB = False
-else:
-    WANDB = False
 
 
+# ── Evaluate ─────────────────────────────────────────────────────────────────
 @torch.no_grad()
 def evaluate(step):
     model.eval()
-    B_eval = eval_input_ids.shape[0]
-    n_blocks_eval = N_BLOCKS
-    timesteps = diff_process.get_timesteps(B_eval, n_blocks_eval, device)
+    timesteps = diff_process.get_timesteps(eval_input_ids.size(0), N_BLOCKS, device)
     with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
         outputs = model(eval_input_ids, timesteps, attention_mask=eval_attn_mask)
         loss_fn.set_step(step)
@@ -345,14 +354,31 @@ def evaluate(step):
     return metrics
 
 
+# ── Inference example ────────────────────────────────────────────────────────
+@torch.no_grad()
+def run_inference_example(step):
+    model.eval()
+    try:
+        text, ids = inference_generator.generate(
+            INFERENCE_PROMPT, max_new_blocks=INFERENCE_MAX_BLOCKS,
+            temperature=0.8, top_k=40, top_p=0.9,
+        )
+        print(f"\n  ── Gen [{step}] ── {text[:200]}\n")
+        if WANDB:
+            wandb.log({"inference/text": wandb.Html(f"<pre>{text}</pre>"), "inference/step": step}, step=step)
+    except Exception as e:
+        print(f"  Inference failed at step {step}: {e}")
+    model.train()
+
+
 # ── Training Loop ────────────────────────────────────────────────────────────
 print(f"\n{'='*60}")
-print(f"  Phase {args.phase}  |  Steps: {args.max_steps}")
+print(f"  LoomLM  Phase {args.phase}  |  Steps: {c.training.max_steps}")
 print(f"  Batch: {args.batch_size}  Accum: {args.grad_accum}  Eff: {args.batch_size * args.grad_accum}")
 print(f"  Seq: {SEQ_LEN}  Blocks: {N_BLOCKS}  Block: {BLOCK_SIZE}")
-print(f"  LR: {args.lr}  Warmup: {args.warmup_steps}  Weight decay: {args.weight_decay}")
-print(f"  Diff weight: {c.training.diffusion_loss_weight}  CLM weight: {c.training.clm_loss_weight}  EOS weight: {c.training.eos_loss_weight}")
-print(f"  Compile: {c.compile}  AMP: {use_amp}  Wandb: {WANDB}")
+print(f"  LR: {c.training.lr}  Warmup: {args.warmup_steps}  Weight decay: {args.weight_decay}")
+print(f"  Diff: {c.training.diffusion_loss_weight}  CLM: {c.training.clm_loss_weight}  EOS: {c.training.eos_loss_weight}")
+print(f"  Compile: {c.compile}  AMP: {use_amp}  Wandb: {WANDB}  LoRA: {USE_LORA}")
 print(f"{'='*60}\n")
 
 model.train()
@@ -360,13 +386,14 @@ step = 0
 best_loss = float("inf")
 os.makedirs(c.training.output_dir, exist_ok=True)
 
-# Resume
 if args.resume:
     ckpt = torch.load(args.resume, map_location=device)
-    model.load_state_dict(ckpt["model_state_dict"])
-    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-    scheduler.load_state_dict(ckpt["scheduler_state_dict"])
-    step = ckpt["step"]
+    model.load_state_dict(ckpt["model_state_dict"], strict=False)
+    if "optimizer_state_dict" in ckpt:
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    if "scheduler_state_dict" in ckpt:
+        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+    step = ckpt.get("step", 0)
     best_loss = ckpt.get("best_loss", float("inf"))
     print(f"  Resumed from step {step}")
 
@@ -376,7 +403,6 @@ data_iter = iter(train_loader)
 
 while step < c.training.max_steps:
     optimizer.zero_grad()
-    accum_loss = 0.0
     accum_metrics = {}
     t_step_start = time.time()
 
@@ -405,13 +431,11 @@ while step < c.training.max_steps:
 
         loss.backward()
 
-        accum_loss += metrics["total_loss"]
         for k, v in metrics.items():
             if k not in accum_metrics:
                 accum_metrics[k] = 0.0
             accum_metrics[k] += v
 
-    # Gradient clipping & step
     torch.nn.utils.clip_grad_norm_(trainable_params, c.training.max_grad_norm)
     optimizer.step()
     scheduler.step()
@@ -438,7 +462,6 @@ while step < c.training.max_steps:
             f"tok/s: {tok_sec:.0f} | "
             f"LR: {lr_val:.2e}"
         )
-
         if WANDB:
             wandb.log({
                 "train/loss": accum_metrics["total_loss"],
@@ -448,6 +471,7 @@ while step < c.training.max_steps:
                 "train/lr": lr_val,
                 "train/tokens_per_sec": tok_sec,
                 "train/tokens_total": tokens_accum,
+                "train/clm_weight": loss_fn.clm_weight,
             }, step=step)
 
     # ── Eval ──
@@ -462,11 +486,12 @@ while step < c.training.max_steps:
         )
         if eval_metrics["total_loss"] < best_loss:
             best_loss = eval_metrics["total_loss"]
-            torch.save({"step": step, "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(), "best_loss": best_loss,
-                        "config": c.to_dict()},
-                       os.path.join(c.training.output_dir, "best.pt"))
-            print(f"  ✓ New best model (loss={best_loss:.4f})")
+            torch.save({
+                "step": step, "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(), "best_loss": best_loss,
+                "config": c.to_dict(),
+            }, os.path.join(c.training.output_dir, "best.pt"))
+            print(f"  ✓ New best (loss={best_loss:.4f})")
         if WANDB:
             wandb.log({
                 "eval/loss": eval_metrics["total_loss"],
@@ -475,6 +500,10 @@ while step < c.training.max_steps:
                 "eval/eos_loss": eval_metrics["eos_loss"],
                 "eval/best_loss": best_loss,
             }, step=step)
+
+    # ── Inference example ──
+    if step % args.inference_interval == 0:
+        run_inference_example(step)
 
     # ── Save ──
     if step % c.training.save_interval == 0:
@@ -491,8 +520,8 @@ while step < c.training.max_steps:
 elapsed_total = time.time() - t0
 avg_tok_sec = tokens_accum / elapsed_total if elapsed_total > 0 else 0
 print(f"\n{'='*60}")
-print(f"  Training complete. Step: {step}  Time: {elapsed_total:.0f}s")
-print(f"  Total tokens processed: {tokens_accum:,}  Avg tok/s: {avg_tok_sec:.0f}")
+print(f"  LoomLM Phase {args.phase} complete. Step: {step}  Time: {elapsed_total:.0f}s")
+print(f"  Total tokens: {tokens_accum:,}  Avg tok/s: {avg_tok_sec:.0f}")
 print(f"{'='*60}")
 
 final_path = os.path.join(c.training.output_dir, "final.pt")
