@@ -23,15 +23,11 @@ class DifDecLM(nn.Module):
 
         self.backbone = SmolLM2Backbone(bc, config.dtype)
 
-        if dc.embedding_mode == "shared":
-            self.embed_proj = nn.Linear(self.d_backbone, self.d_decoder)
-        else:
-            self.token_embed = nn.Embedding(v, self.d_decoder)
-
         self.time_embedding = TimeEmbedding(difc.d_time_embed, use_mlp=difc.time_embed_mlp)
         self.decoder = DiffusionDecoderStack(config)
 
         if dc.embedding_mode == "shared":
+            self.embed_proj = nn.Linear(self.d_backbone, self.d_decoder)
             self.projection_head = EmbeddingProjectionHead(
                 d_decoder=dc.d_decoder,
                 d_backbone=bc.d_backbone,
@@ -39,6 +35,7 @@ class DifDecLM(nn.Module):
                 embedding_weight=self.backbone.get_embedding_matrix(),
             )
         else:
+            self.token_embed = nn.Embedding(v, self.d_decoder)
             embed_weight = self.token_embed.weight if dc.use_weight_tying else None
             self.projection_head = TokenProjectionHead(
                 d_decoder=dc.d_decoder,

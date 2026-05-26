@@ -139,7 +139,7 @@ class SmolLM2Backbone(nn.Module):
         )
         return outputs.last_hidden_state
 
-    def apply_lora(self, r=16, alpha=16):
+    def apply_lora(self, r=32, alpha=32):
         def _recurse(module):
             for name, child in list(module.named_children()):
                 if isinstance(child, nn.Linear):

@@ -28,7 +28,6 @@ class DecoderConfig:
 
     embedding_mode: str = "shared"
     use_weight_tying: bool = True
-
     use_cross_attention: bool = True
     cross_attention_every: int = 2
     cross_attention_heads: int = 2
