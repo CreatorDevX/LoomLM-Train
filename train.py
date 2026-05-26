@@ -194,8 +194,8 @@ print(f"  Trainable: {trainable:,}  Total: {total:,}")
 
 # ── Compile ──────────────────────────────────────────────────────────────────
 if c.compile and hasattr(torch, "compile") and device.type == "cuda":
-    print(f"  Compiling decoder ({args.compile_mode})...")
-    model.decoder = torch.compile(model.decoder, mode=args.compile_mode, options={"cudagraphs": False})
+    print(f"  Compiling decoder...")
+    model.decoder = torch.compile(model.decoder, options={"cudagraphs": False})
 
 # ── Diffusion components ─────────────────────────────────────────────────────
 diff_process = DiffusionProcess(c).to(device)
