@@ -21,8 +21,8 @@ class TokenProjectionHead(nn.Module):
     def forward(self, h):
         with torch.cuda.amp.autocast(enabled=False):
             h_f32 = h.float() if h.dtype != torch.float32 else h
-            logits = self.proj(h_f32)
-            eos_logits = self.eos_head(h_f32).squeeze(-1)
+            logits = self.proj(h_f32.to(dtype=self.proj.weight.dtype))
+            eos_logits = self.eos_head(h_f32.to(dtype=self.eos_head.weight.dtype)).squeeze(-1)
         return logits, eos_logits
 
 
@@ -40,7 +40,7 @@ class EmbeddingProjectionHead(nn.Module):
     def forward(self, h):
         with torch.cuda.amp.autocast(enabled=False):
             h_f32 = h.float() if h.dtype != torch.float32 else h
-            h_up = self.up_proj(h_f32)
+            h_up = self.up_proj(h_f32.to(dtype=self.up_proj.weight.dtype))
             logits = F.linear(h_up, self.embedding_weight.float())
-            eos_logits = self.eos_head(h_f32).squeeze(-1)
+            eos_logits = self.eos_head(h_f32.to(dtype=self.eos_head.weight.dtype)).squeeze(-1)
         return logits, eos_logits
