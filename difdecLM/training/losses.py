@@ -22,10 +22,10 @@ class DiffusionLoss(nn.Module):
             self.clm_weight = self.clm_max_weight * progress
 
     def forward(self, model_output, block_tokens, block_mask=None):
-        noise_pred = model_output["noise_pred"]
-        noise_target = model_output["noise_target"]
-        logits = model_output["logits"]
-        eos_logits = model_output["eos_logits"]
+        noise_pred = model_output["noise_pred"].float()
+        noise_target = model_output["noise_target"].float()
+        logits = model_output["logits"].float()
+        eos_logits = model_output["eos_logits"].float()
 
         B, n_blocks, block_size, V = logits.shape
 
