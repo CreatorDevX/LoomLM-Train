@@ -47,6 +47,11 @@ class DifDecLM(nn.Module):
                 embedding_weight=embed_weight,
             )
 
+        self.n_context_slots = blc.n_context_slots
+        self.context_queries = nn.Parameter(
+            torch.randn(self.n_context_slots, self.d_backbone) * 0.02
+        )
+
     def get_clean_embeddings(self, block_tokens):
         if hasattr(self, 'token_embed'):
             return self.token_embed(block_tokens)
@@ -56,20 +61,26 @@ class DifDecLM(nn.Module):
     def prepare_context(self, backbone_hidden, n_blocks):
         B, S, D = backbone_hidden.shape
         block_size = self.block_size
+        n_slots = self.n_context_slots
         ctx_window = self.config.block.context_window
 
-        start_positions = torch.arange(n_blocks, device=backbone_hidden.device) * block_size
+        queries = self.context_queries
+        scale = D ** -0.5
 
-        ctx = torch.zeros(B, n_blocks, D, device=backbone_hidden.device)
+        ctx = torch.zeros(B, n_blocks, n_slots, D, device=backbone_hidden.device)
+
         for b in range(n_blocks):
-            pos = start_positions[b]
-            if pos >= ctx_window:
-                h = backbone_hidden[:, pos - ctx_window:pos, :].mean(dim=1)
-            elif pos > 0:
-                h = backbone_hidden[:, :pos, :].mean(dim=1)
+            pos = b * block_size
+            if pos == 0:
+                window = backbone_hidden[:, 0:1, :]
             else:
-                h = backbone_hidden[:, 0:1, :].squeeze(1)
-            ctx[:, b] = h
+                start = max(0, pos - ctx_window)
+                window = backbone_hidden[:, start:pos, :]
+            attn = torch.einsum('sd,btd->bst', queries, window) * scale
+            attn = torch.softmax(attn, dim=-1)
+            slots = torch.einsum('bst,btd->bsd', attn, window)
+            ctx[:, b] = slots
+
         return ctx
 
     def predict_noise(self, noise_pred, E_t, sqrt_alpha_bar, sqrt_one_minus_alpha_bar):
@@ -115,7 +126,8 @@ class DifDecLM(nn.Module):
         E_t = sqrt_alpha_bar * E0 + sqrt_one_minus_alpha_bar * noise
 
         E_t_flat = E_t.view(B * n_blocks, block_size, self.d_decoder)
-        context_flat = context.view(B * n_blocks, self.d_backbone)
+        n_slots = self.n_context_slots
+        context_flat = context.view(B * n_blocks, n_slots, self.d_backbone)
 
         t_flat = timesteps.view(B * n_blocks).float()
         time_emb = self.time_embedding(t_flat)
@@ -137,6 +149,9 @@ class DifDecLM(nn.Module):
             "logits": logits,
             "eos_logits": eos_logits,
             "context": context,
+            "timesteps": timesteps,
+            "sqrt_alpha_bar": sqrt_alpha_bar,
+            "sqrt_one_minus_alpha_bar": sqrt_one_minus_alpha_bar,
         }
 
     @torch.no_grad()
@@ -167,6 +182,7 @@ class DifDecLM(nn.Module):
         params = list(self.decoder.parameters())
         params.extend(self.time_embedding.parameters())
         params.extend(self.projection_head.parameters())
+        params.append(self.context_queries)
         if hasattr(self, 'embed_proj'):
             params.extend(self.embed_proj.parameters())
         if hasattr(self, 'token_embed'):

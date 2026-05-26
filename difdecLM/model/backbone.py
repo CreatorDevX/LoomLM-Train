@@ -123,6 +123,8 @@ class SmolLM2Backbone(nn.Module):
                 p.requires_grad_(True)
 
     def get_embedding_matrix(self):
+        if hasattr(self.embed_fn, 'original'):
+            return self.embed_fn.original.weight
         return self.embed_fn.weight
 
     def embed_tokens(self, input_ids):

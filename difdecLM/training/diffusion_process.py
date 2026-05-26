@@ -66,7 +66,7 @@ class DiffusionProcess:
         return sqrt_ab * x0 + sqrt_one_minus_ab * noise, noise
 
     def get_timesteps(self, batch_size, n_blocks, device):
-        t = torch.randint(0, self.T, (batch_size, n_blocks), device=device)
+        t = torch.randint(1, self.T, (batch_size, n_blocks), device=device)
         return t
 
     def get_ddim_timesteps(self, device):

@@ -35,7 +35,7 @@ parser.add_argument("--d-time-embed", type=int, default=384)
 parser.add_argument("--diffusion-steps", type=int, default=1000)
 parser.add_argument("--sampling-steps", type=int, default=4)
 parser.add_argument("--noise-schedule", type=str, default="cosine")
-parser.add_argument("--prediction-type", type=str, default="epsilon")
+parser.add_argument("--prediction-type", type=str, default="x0")
 
 # Training
 parser.add_argument("--batch-size", type=int, default=16)
@@ -50,7 +50,7 @@ parser.add_argument("--max-grad-norm", type=float, default=1.0)
 # Loss weights
 parser.add_argument("--diff-weight", type=float, default=None)
 parser.add_argument("--clm-weight", type=float, default=None)
-parser.add_argument("--eos-weight", type=float, default=None)
+parser.add_argument("--consistency-weight", type=float, default=None)
 parser.add_argument("--clm-ramp-steps", type=int, default=0)
 
 # LoRA (phase 2)
@@ -137,7 +137,7 @@ if args.phase == 1:
     c.training.lr = args.lr or 1e-4
     c.training.diffusion_loss_weight = args.diff_weight or 1.0
     c.training.clm_loss_weight = args.clm_weight or 0.0
-    c.training.eos_loss_weight = args.eos_weight or 0.01
+    c.training.consistency_loss_weight = args.consistency_weight or 0.0
     c.backbone.freeze = True
     USE_LORA = False
 elif args.phase == 2:
@@ -145,8 +145,8 @@ elif args.phase == 2:
     c.training.lr = args.lr or 2e-5
     c.training.diffusion_loss_weight = args.diff_weight or 1.0
     c.training.clm_loss_weight = args.clm_weight or 0.3
-    c.training.eos_loss_weight = args.eos_weight or 0.05
-    c.training.clm_loss_ramp_steps = args.clm_ramp_steps or 3000
+    c.training.consistency_loss_weight = args.consistency_weight or 0.1
+    c.training.clm_loss_ramp_steps = args.clm_ramp_steps or 1000
     c.backbone.freeze = True
     USE_LORA = args.use_lora
 elif args.phase == 3:
@@ -154,7 +154,7 @@ elif args.phase == 3:
     c.training.lr = args.lr or 2e-5
     c.training.diffusion_loss_weight = args.diff_weight or 0.5
     c.training.clm_loss_weight = args.clm_weight or 0.5
-    c.training.eos_loss_weight = args.eos_weight or 0.02
+    c.training.consistency_loss_weight = args.consistency_weight or 0.0
     c.training.clm_loss_ramp_steps = args.clm_ramp_steps or 2000
     c.backbone.freeze = False
     c.backbone.unfreeze_last_n_layers = 4
@@ -373,7 +373,7 @@ print(f"  LoomLM  Phase {args.phase}  |  Steps: {c.training.max_steps}")
 print(f"  Batch: {args.batch_size}  Accum: {args.grad_accum}  Eff: {args.batch_size * args.grad_accum}")
 print(f"  Seq: {SEQ_LEN}  Blocks: {N_BLOCKS}  Block: {BLOCK_SIZE}")
 print(f"  LR: {c.training.lr}  Warmup: {args.warmup_steps}  Weight decay: {args.weight_decay}")
-print(f"  Diff: {c.training.diffusion_loss_weight}  CLM: {c.training.clm_loss_weight}  EOS: {c.training.eos_loss_weight}")
+print(f"  Diff: {c.training.diffusion_loss_weight}  CLM: {c.training.clm_loss_weight}  Cons: {c.training.consistency_loss_weight}")
 print(f"  Compile: {c.compile}  AMP: {use_amp}  Wandb: {WANDB}  LoRA: {USE_LORA}")
 print(f"{'='*60}\n")
 
@@ -449,26 +449,38 @@ while step < c.training.max_steps:
 
     # ── Log ──
     if step % c.training.log_interval == 0:
-        print(
+        pred_norm = accum_metrics.get("pred_norm", None)
+        cons = accum_metrics.get("consistency_loss", 0.0)
+        log_line = (
             f"  Step {step:4d}/{c.training.max_steps} | "
             f"Loss: {accum_metrics['total_loss']:.4f} | "
             f"Diff: {accum_metrics['diff_loss']:.4f} | "
             f"Token: {accum_metrics['token_loss']:.4f} | "
-            f"EOS: {accum_metrics['eos_loss']:.4f} | "
+            f"Cons: {cons:.4f} | "
             f"tok/s: {tok_sec:.0f} | "
             f"LR: {lr_val:.2e}"
         )
+        if pred_norm is not None:
+            log_line += f" | pred_norm: {pred_norm:.3f}"
+        print(log_line)
         if WANDB:
-            wandb.log({
+            wandb_log = {
                 "train/loss": accum_metrics["total_loss"],
                 "train/diff_loss": accum_metrics["diff_loss"],
                 "train/token_loss": accum_metrics["token_loss"],
-                "train/eos_loss": accum_metrics["eos_loss"],
                 "train/lr": lr_val,
                 "train/tokens_per_sec": tok_sec,
                 "train/tokens_total": tokens_accum,
                 "train/clm_weight": loss_fn.clm_weight,
-            }, step=step)
+            }
+            cons = accum_metrics.get("consistency_loss", 0)
+            if cons != 0:
+                wandb_log["train/consistency_loss"] = cons
+            if pred_norm is not None:
+                target_norm = accum_metrics.get("target_norm", 0)
+                wandb_log["train/pred_norm"] = pred_norm
+                wandb_log["train/target_norm"] = target_norm
+            wandb.log(wandb_log, step=step)
 
     # ── Eval ──
     if step % c.training.eval_interval == 0:
@@ -477,8 +489,7 @@ while step < c.training.max_steps:
             f"  ── Eval [{step}] ── "
             f"Loss: {eval_metrics['total_loss']:.4f} | "
             f"Diff: {eval_metrics['diff_loss']:.4f} | "
-            f"Token: {eval_metrics['token_loss']:.4f} | "
-            f"EOS: {eval_metrics['eos_loss']:.4f}"
+            f"Token: {eval_metrics['token_loss']:.4f}"
         )
         if eval_metrics["total_loss"] < best_loss:
             best_loss = eval_metrics["total_loss"]
@@ -493,9 +504,19 @@ while step < c.training.max_steps:
                 "eval/loss": eval_metrics["total_loss"],
                 "eval/diff_loss": eval_metrics["diff_loss"],
                 "eval/token_loss": eval_metrics["token_loss"],
-                "eval/eos_loss": eval_metrics["eos_loss"],
                 "eval/best_loss": best_loss,
             }, step=step)
+
+    # ── Diagnostic: norm check at step 100 ──
+    if step == 100 and accum_metrics.get("pred_norm") is not None:
+        pn = accum_metrics["pred_norm"]
+        tn = accum_metrics["target_norm"]
+        ratio = pn / max(tn, 1e-8)
+        if ratio < 0.3:
+            print(f"  ⚠ pred_norm={pn:.3f} vs target_norm={tn:.3f} (ratio={ratio:.2f}) — "
+                  f"head may be predicting near-zero. Consider --no-amp or --prediction-type epsilon.")
+        else:
+            print(f"  ✓ Norm check: pred={pn:.3f}, target={tn:.3f}, ratio={ratio:.2f}")
 
     # ── Inference example ──
     if step % args.inference_interval == 0:

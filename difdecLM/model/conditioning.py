@@ -31,3 +31,20 @@ class HybridConditioning(nn.Module):
         gamma_beta = self.net(combined)
         gamma, beta = gamma_beta.chunk(2, dim=-1)
         return gamma * h + beta
+
+
+class CrossAttention(nn.Module):
+    def __init__(self, d_decoder, d_context, n_heads=2, dropout=0.1):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(
+            embed_dim=d_decoder,
+            num_heads=n_heads,
+            kdim=d_context,
+            vdim=d_context,
+            dropout=dropout,
+            batch_first=True,
+        )
+
+    def forward(self, x, context):
+        out, _ = self.attn(x, context, context, need_weights=False)
+        return out

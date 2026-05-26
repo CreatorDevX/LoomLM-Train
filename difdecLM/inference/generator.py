@@ -12,6 +12,7 @@ class BlockGenerator:
         self.diff_process = DiffusionProcess(config).to(device)
         self.block_size = config.block.block_size
         self.eos_threshold = config.block.eos_threshold
+        self.n_context_slots = config.block.n_context_slots
 
         from transformers import AutoTokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -82,16 +83,19 @@ class BlockGenerator:
         return output, all_ids
 
     def _get_context(self, all_ids, block_idx, verbose=False):
-        ctx_window = self.config.block.context_window
-
         with torch.no_grad():
             backbone_hidden = self.model.backbone(all_ids)
-
         S = backbone_hidden.size(1)
-        start = max(0, S - ctx_window)
-        ctx = backbone_hidden[:, start:S, :].mean(dim=1)
+        ctx_window = self.config.block.context_window
+        queries = self.model.context_queries
+        scale = self.model.d_backbone ** -0.5
 
-        return ctx
+        start = max(0, S - ctx_window)
+        window = backbone_hidden[:, start:S, :]
+        attn = torch.einsum('sd,btd->bst', queries, window) * scale
+        attn = torch.softmax(attn, dim=-1)
+        slots = torch.einsum('bst,btd->bsd', attn, window)
+        return slots
 
     def generate_teacherless(self, prompt, max_new_blocks=8, guidance_scale=2.0, verbose=False):
         self.model.eval()
@@ -112,10 +116,15 @@ class BlockGenerator:
             uncond_prompt = torch.tensor([[self.tokenizer.eos_token_id] * 1], device=self.device)
             with torch.no_grad():
                 uncond_hidden = self.model.backbone(uncond_prompt)
-            uncond_ctx = uncond_hidden[:, -1:, :].squeeze(1)
+            uncond_h = uncond_hidden[:, -1:, :]
+            queries = self.model.context_queries
+            scale = self.model.d_backbone ** -0.5
+            attn = torch.einsum('sd,btd->bst', queries, uncond_h) * scale
+            attn = torch.softmax(attn, dim=-1)
+            uncond_ctx = torch.einsum('bst,btd->bsd', attn, uncond_h)
 
             def guided_model(emb, ctx, t_emb):
-                cond_pred = self.model.decoder(emb, cond_context, t_emb)
+                cond_pred = self.model.decoder(emb, ctx, t_emb)
                 uncond_pred = self.model.decoder(emb, uncond_ctx, t_emb)
                 return uncond_pred + guidance_scale * (cond_pred - uncond_pred)
 
@@ -153,11 +162,18 @@ class BlockGenerator:
             t_val = timesteps[i].item()
             t_batch = torch.full((context.size(0),), t_val, device=device, dtype=torch.float)
             t_emb = self.model.time_embedding(t_batch)
-            noise_pred = denoise_fn(x, context, t_emb)
+
+            noise_pred_raw = denoise_fn(x, context, t_emb)
 
             ab_t = ab[t_val]
             sqrt_ab_t = ab_t.sqrt()
             sqrt_one_minus_ab_t = (1.0 - ab_t).clamp(min=0.0).sqrt()
+
+            noise_pred = self.model.predict_noise(
+                noise_pred_raw, x,
+                sqrt_alpha_bar=sqrt_ab_t,
+                sqrt_one_minus_alpha_bar=sqrt_one_minus_ab_t,
+            )
 
             x0_pred = (x - sqrt_one_minus_ab_t * noise_pred) / sqrt_ab_t.clamp(min=1e-8)
 

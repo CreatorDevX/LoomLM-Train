@@ -1,14 +1,15 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .conditioning import FiLMLayer
+from .conditioning import CrossAttention
 
 
 class DiffusionDecoderLayer(nn.Module):
-    def __init__(self, d_decoder, n_heads, d_ff, dropout, d_context, d_time):
+    def __init__(self, d_decoder, n_heads, d_ff, dropout, d_time, use_cross_attn=False, cross_heads=2, d_context=None):
         super().__init__()
         self.d_decoder = d_decoder
         self.n_heads = n_heads
+        self.use_cross_attn = use_cross_attn
 
         self.norm1 = nn.LayerNorm(d_decoder)
         self.self_attn = nn.MultiheadAttention(
@@ -17,7 +18,10 @@ class DiffusionDecoderLayer(nn.Module):
 
         self.time_mlp = nn.Linear(d_time, d_decoder)
 
-        self.film = FiLMLayer(d_decoder, d_context)
+        if use_cross_attn:
+            ctx_dim = d_context if d_context is not None else d_decoder
+            self.norm_cross = nn.LayerNorm(d_decoder)
+            self.cross_attn = CrossAttention(d_decoder, ctx_dim, n_heads=cross_heads, dropout=dropout)
 
         self.norm2 = nn.LayerNorm(d_decoder)
 
@@ -31,11 +35,12 @@ class DiffusionDecoderLayer(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, context, time_emb, attn_mask=None):
+    def forward(self, x, context_slots, time_emb, attn_mask=None):
         x = x + self._sa_block(self.norm1(x), attn_mask)
         time_gate = self.time_mlp(time_emb).unsqueeze(1)
         x = x * (1 + time_gate)
-        x = self.film(x, context)
+        if self.use_cross_attn:
+            x = x + self.dropout(self.cross_attn(self.norm_cross(x), context_slots))
         x = x + self._ff_block(self.norm2(x))
         return x
 
@@ -62,18 +67,20 @@ class DiffusionDecoderStack(nn.Module):
                 n_heads=dc.n_heads,
                 d_ff=dc.d_ff,
                 dropout=dc.dropout,
-                d_context=dc.d_decoder,
                 d_time=difc.d_time_embed,
+                use_cross_attn=dc.use_cross_attention and (i % dc.cross_attention_every == 0),
+                cross_heads=dc.cross_attention_heads,
+                d_context=dc.d_decoder,
             )
-            for _ in range(dc.n_layers)
+            for i in range(dc.n_layers)
         ])
 
         self.norm = nn.LayerNorm(dc.d_decoder)
 
-    def forward(self, block_emb, context, time_emb):
-        context = self.context_proj(context)
+    def forward(self, block_emb, context_slots, time_emb):
+        context_slots = self.context_proj(context_slots)
         h = block_emb
         for layer in self.layers:
-            h = layer(h, context, time_emb)
+            h = layer(h, context_slots, time_emb)
         h = self.norm(h)
         return h

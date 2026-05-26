@@ -29,13 +29,17 @@ class DecoderConfig:
     embedding_mode: str = "shared"
     use_weight_tying: bool = True
 
+    use_cross_attention: bool = True
+    cross_attention_every: int = 2
+    cross_attention_heads: int = 2
+
 
 @dataclass
 class DiffusionConfig:
     timesteps: int = 1000
-    sampling_steps: int = 8
+    sampling_steps: int = 4
     noise_schedule: str = "cosine"
-    prediction_type: str = "epsilon"
+    prediction_type: str = "x0"
 
     beta_start: float = 1e-4
     beta_end: float = 0.02
@@ -44,6 +48,8 @@ class DiffusionConfig:
     d_time_embed: int = 384
     time_embed_mlp: bool = True
 
+    diffusion_timestep_weighting: str = "uniform"
+
 
 @dataclass
 class BlockConfig:
@@ -51,8 +57,9 @@ class BlockConfig:
     max_blocks: int = 32
     max_seq_len: int = 2048
 
-    context_pooling: str = "last"  # "last", "mean", "learned_query"
-    context_window: int = 1
+    context_pooling: str = "attention"
+    context_window: int = 32
+    n_context_slots: int = 4
 
     eos_threshold: float = 0.5
 
@@ -74,7 +81,8 @@ class TrainingConfig:
 
     diffusion_loss_weight: float = 1.0
     clm_loss_weight: float = 0.0
-    eos_loss_weight: float = 0.01
+    consistency_loss_weight: float = 0.0
+    eos_loss_weight: float = 0.0
     context_loss_weight: float = 0.0
 
     clm_loss_ramp_steps: int = 5000
