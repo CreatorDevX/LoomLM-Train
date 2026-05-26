@@ -7,6 +7,12 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+try:
+    import torch._inductor
+    torch._inductor.config.triton.cudagraphs = False
+except (ImportError, AttributeError):
+    pass
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from difdecLM import DifDecConfig
 from difdecLM.model.difdec_lm import DifDecLM
