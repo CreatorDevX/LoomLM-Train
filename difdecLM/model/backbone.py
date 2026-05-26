@@ -129,16 +129,13 @@ class SmolLM2Backbone(nn.Module):
         return self.embed_fn(input_ids)
 
     def forward(self, input_ids, attention_mask=None):
-        x = self.embed_fn(input_ids)
-
-        if hasattr(self.backbone, 'drop'):
-            x = self.backbone.drop(x)
-
-        for layer in self.layers:
-            x = layer(x, attention_mask=attention_mask)[0]
-
-        x = self.norm(x)
-        return x
+        outputs = self.backbone(
+            input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=False,
+            return_dict=True,
+        )
+        return outputs.last_hidden_state
 
     def apply_lora(self, r=16, alpha=16):
         def _recurse(module):
