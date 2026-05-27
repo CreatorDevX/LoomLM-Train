@@ -197,16 +197,8 @@ def main(args):
         print("Building model...")
     model = DifDecLM(c)
     model.to(device=device)
-    if use_amp:
-        model.to(dtype=amp_dtype)
-        for m in model.decoder.modules():
-            if isinstance(m, nn.LayerNorm):
-                m.to(dtype=torch.float32)
-        model.time_embedding.to(dtype=torch.float32)
-    else:
-        model.backbone.to(dtype=torch.float32)
-        if c.decoder.embedding_mode == "shared" and hasattr(model.projection_head, 'embedding_weight'):
-            model.projection_head.embedding_weight = model.backbone.get_embedding_matrix()
+    if not use_amp and c.decoder.embedding_mode == "shared" and hasattr(model.projection_head, 'embedding_weight'):
+        model.projection_head.embedding_weight = model.backbone.get_embedding_matrix()
 
     scaler = torch.cuda.amp.GradScaler(enabled=(amp_dtype == torch.float16))
 
