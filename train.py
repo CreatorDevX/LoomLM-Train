@@ -207,6 +207,8 @@ def main(args):
         if c.decoder.embedding_mode == "shared" and hasattr(model.projection_head, 'embedding_weight'):
             model.projection_head.embedding_weight = model.backbone.get_embedding_matrix()
 
+    scaler = torch.cuda.amp.GradScaler(enabled=(amp_dtype == torch.float16))
+
     if c.backbone.freeze:
         for p in model.backbone.parameters():
             p.requires_grad_(False)
@@ -434,15 +436,17 @@ def main(args):
             loss_fn.set_step(step)
             loss, metrics = loss_fn(outputs, block_tokens, block_mask=block_mask)
             loss = loss / c.training.gradient_accumulation_steps
-            loss.backward()
+            scaler.scale(loss).backward()
 
             for k, v in metrics.items():
                 if k not in accum_metrics:
                     accum_metrics[k] = 0.0
                 accum_metrics[k] += v
 
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(trainable_params, c.training.max_grad_norm)
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
         scheduler.step()
         step += 1
 

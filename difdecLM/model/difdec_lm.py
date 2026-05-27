@@ -105,7 +105,6 @@ class DifDecLM(nn.Module):
         backbone_hidden = self.backbone(input_ids, attention_mask=attention_mask)
 
         block_tokens = input_ids.view(B, n_blocks, block_size)
-
         context = self.prepare_context(backbone_hidden, n_blocks)
 
         E0 = self.get_clean_embeddings(block_tokens)
