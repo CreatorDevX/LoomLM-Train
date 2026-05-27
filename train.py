@@ -147,7 +147,7 @@ def main(args):
     c.data.num_workers = args.num_workers
 
     c.device = "cuda"
-    c.dtype = args.dtype
+    c.dtype = "float32"  # backbone always fp32; AMP handles runtime casting
     c.compile = not args.no_compile
 
     # Phase presets (loss schedule only — backbone mode controlled separately)
