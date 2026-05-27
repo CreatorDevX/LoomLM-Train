@@ -64,8 +64,8 @@ class EmbeddingProjectionHead(nn.Module):
 
             # LoRA embedding correction: h_up @ B^T @ A^T * scale
             if self.lora_A is not None:
-                h_lora = F.linear(h_up, self.lora_B.t().float())
-                h_lora = F.linear(h_lora, self.lora_A.t().float())
+                h_lora = F.linear(h_up, self.lora_B.float())
+                h_lora = F.linear(h_lora, self.lora_A.float())
                 h_up = h_up + h_lora * self.lora_scale
 
             logits = F.linear(h_up, self.embedding_weight.float())

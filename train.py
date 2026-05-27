@@ -58,6 +58,7 @@ parser.add_argument("--full-ft", action="store_true", help="Full finetuning (unf
 parser.add_argument("--use-lora", action="store_true", default=False, help="Apply LoRA to backbone")
 parser.add_argument("--lora-r", type=int, default=32)
 parser.add_argument("--lora-alpha", type=int, default=32)
+parser.add_argument("--optim-8bit", action="store_true", default=False, help="Use 8-bit AdamW (bitsandbytes)")
 
 
 # Dataset
@@ -244,13 +245,23 @@ def main(args):
 
     # ── Optimizer ────────────────────────────────────────────────────────────────
     trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(
-        trainable_params,
-        lr=c.training.lr,
-        betas=(c.training.adam_beta1, c.training.adam_beta2),
-        eps=c.training.adam_eps,
-        weight_decay=c.training.weight_decay,
-    )
+    if args.optim_8bit:
+        import bitsandbytes as bnb
+        optimizer = bnb.optim.AdamW8bit(
+            trainable_params,
+            lr=c.training.lr,
+            betas=(c.training.adam_beta1, c.training.adam_beta2),
+            eps=c.training.adam_eps,
+            weight_decay=c.training.weight_decay,
+        )
+    else:
+        optimizer = torch.optim.AdamW(
+            trainable_params,
+            lr=c.training.lr,
+            betas=(c.training.adam_beta1, c.training.adam_beta2),
+            eps=c.training.adam_eps,
+            weight_decay=c.training.weight_decay,
+        )
 
     def _cosine_lr(step, warmup, max_steps, lr, lr_min):
         if step < warmup:
