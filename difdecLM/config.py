@@ -11,6 +11,7 @@ class BackboneConfig:
     use_lora: bool = False
     lora_r: int = 8
     lora_alpha: int = 16
+    full_ft_kl: bool = False
 
 
 @dataclass
@@ -86,6 +87,7 @@ class TrainingConfig:
 
     clm_loss_ramp_steps: int = 5000
     clm_loss_max_weight: float = 1.0
+    kl_loss_weight: float = 0.0
 
     mask_pad_positions: bool = True
     pad_token_id: int = 0

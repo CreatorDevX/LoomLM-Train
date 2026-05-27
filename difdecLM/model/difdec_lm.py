@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .backbone import SmolLM2Backbone
 from .time_embedding import TimeEmbedding
@@ -22,6 +23,15 @@ class DifDecLM(nn.Module):
         self.d_decoder = dc.d_decoder
 
         self.backbone = SmolLM2Backbone(bc, config.dtype)
+
+        # Frozen reference backbone for KL penalty (full FT only)
+        if config.backbone.full_ft_kl:
+            import copy
+            self.backbone_ref = copy.deepcopy(self.backbone)
+            for p in self.backbone_ref.parameters():
+                p.requires_grad_(False)
+        else:
+            self.backbone_ref = None
 
         self.time_embedding = TimeEmbedding(difc.d_time_embed, use_mlp=difc.time_embed_mlp)
         self.decoder = DiffusionDecoderStack(config)
@@ -104,6 +114,14 @@ class DifDecLM(nn.Module):
 
         backbone_hidden = self.backbone(input_ids, attention_mask=attention_mask)
 
+        # KL penalty (full FT only)
+        if self.backbone_ref is not None:
+            with torch.no_grad():
+                backbone_ref_hidden = self.backbone_ref(input_ids, attention_mask=attention_mask)
+            backbone_kl_loss = F.mse_loss(backbone_hidden, backbone_ref_hidden)
+        else:
+            backbone_kl_loss = torch.tensor(0.0, device=backbone_hidden.device, dtype=backbone_hidden.dtype)
+
         block_tokens = input_ids.view(B, n_blocks, block_size)
         context = self.prepare_context(backbone_hidden, n_blocks)
 
@@ -148,6 +166,7 @@ class DifDecLM(nn.Module):
             "timesteps": timesteps,
             "sqrt_alpha_bar": sqrt_alpha_bar,
             "sqrt_one_minus_alpha_bar": sqrt_one_minus_alpha_bar,
+            "backbone_kl_loss": backbone_kl_loss,
         }
 
     @torch.no_grad()

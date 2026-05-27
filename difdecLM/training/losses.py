@@ -13,6 +13,7 @@ class DiffusionLoss(nn.Module):
         self.eos_weight = tc.eos_loss_weight
         self.clm_ramp_steps = tc.clm_loss_ramp_steps
         self.clm_max_weight = tc.clm_loss_max_weight
+        self.kl_weight = tc.kl_loss_weight
         self.mask_pad = tc.mask_pad_positions
         self.pad_id = tc.pad_token_id
 
@@ -97,12 +98,19 @@ class DiffusionLoss(nn.Module):
         else:
             consistency_loss = torch.tensor(0.0, device=pred.device if isinstance(pred, torch.Tensor) else block_tokens.device)
 
+        # ── KL penalty (full FT) ────────────────────────────────────────────
+        if self.kl_weight > 0:
+            kl_loss = model_output.get("backbone_kl_loss", torch.tensor(0.0, device=block_tokens.device))
+        else:
+            kl_loss = torch.tensor(0.0, device=block_tokens.device)
+
         # ── Total ───────────────────────────────────────────────────────────
         total_loss = (
             self.diff_weight * diff_loss
             + self.clm_weight * token_loss
             + self.consistency_weight * consistency_loss
             + self.eos_weight * eos_loss
+            + self.kl_weight * kl_loss
         )
 
         metrics = {
@@ -110,6 +118,7 @@ class DiffusionLoss(nn.Module):
             "token_loss": token_loss.detach().item(),
             "consistency_loss": consistency_loss.detach().item(),
             "eos_loss": eos_loss.detach().item(),
+            "backbone_kl_loss": kl_loss.detach().item(),
             "total_loss": total_loss.detach().item(),
             "clm_weight": self.clm_weight,
         }

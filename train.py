@@ -59,6 +59,8 @@ parser.add_argument("--use-lora", action="store_true", default=False, help="Appl
 parser.add_argument("--lora-r", type=int, default=32)
 parser.add_argument("--lora-alpha", type=int, default=32)
 parser.add_argument("--optim-8bit", action="store_true", default=False, help="Use 8-bit AdamW (bitsandbytes)")
+parser.add_argument("--kl-weight", type=float, default=0.01, help="KL penalty weight for full FT backbone")
+
 
 
 # Dataset
@@ -171,10 +173,12 @@ def main(args):
     # Backbone training mode (independent of phase)
     if args.full_ft:
         c.backbone.freeze = False
-        c.backbone.unfreeze_last_n_layers = 4
+        c.backbone.unfreeze_last_n_layers = 0
+        c.backbone.full_ft_kl = args.kl_weight > 0
     else:
         c.backbone.freeze = True
         c.backbone.unfreeze_last_n_layers = 0
+    c.training.kl_loss_weight = args.kl_weight
     DO_LORA = args.use_lora and not args.full_ft
 
     SEQ_LEN = c.block.max_seq_len
